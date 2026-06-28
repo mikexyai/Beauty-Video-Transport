@@ -1,0 +1,25 @@
+# Credentials / secrets
+apiKey/
+youtube-upload/config/
+.env
+*.pem
+*.key
+
+# Downloaded media and generated outputs
+downloads/
+outputs/
+analysis/
+*.part
+*.tmp
+
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
