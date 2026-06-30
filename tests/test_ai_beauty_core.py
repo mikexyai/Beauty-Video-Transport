@@ -1,3 +1,4 @@
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -37,7 +38,7 @@ from scripts.ai_beauty.normalize_screening_json import extract_json_object, norm
 from scripts.ai_beauty.migrate_candidate_status_constraint import build_candidate_status_constraint_sql, invalid_statuses
 from scripts.ai_beauty.repositories.run_logs import RunLogRepository, build_run_summary
 from scripts.youtube_profile_guard import validate_channel_identity
-from scripts.ai_beauty.operator import operator_should_continue, summarize_operator_iteration
+from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration
 from scripts.ai_beauty.duplicate_detection import assess_text_duplicate_risk, normalize_duplicate_text, hamming_distance
 from scripts.bilibili_pipeline import decide_bilibili_candidate_action, route_bilibili_upload, build_bilibili_pipeline_plan
 from scripts.ai_beauty.fetch_metrics import parse_video_metric_item, build_metric_upsert_params
@@ -562,6 +563,17 @@ class AiBeautyCoreTests(unittest.TestCase):
         self.assertEqual(summary["uploaded"], 1)
         self.assertEqual(summary["screened_out"], 1)
         self.assertEqual(summary["hard_blockers"], ["download_failed:c", "vision_required:d"])
+
+    def test_build_process_selected_command_uses_module_invocation_to_avoid_operator_name_shadowing(self):
+        cmd = build_process_selected_command("123", auto_upload=True)
+        self.assertEqual(cmd, [
+            sys.executable,
+            "-m",
+            "scripts.ai_beauty.process_selected",
+            "--aweme-id",
+            "123",
+            "--auto-upload",
+        ])
 
     def test_normalize_duplicate_text_removes_noise_and_case(self):
         self.assertEqual(normalize_duplicate_text("AI Beauty! #Portrait ✨"), "ai beauty portrait")

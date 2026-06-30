@@ -61,10 +61,19 @@ def count_uploads() -> int:
     return len(latest_uploads(10_000))
 
 
-def run_process_selected(aweme_id: str, *, auto_upload: bool) -> dict[str, Any]:
-    cmd = ["python", "scripts/ai_beauty/process_selected.py", "--aweme-id", aweme_id]
+def build_process_selected_command(aweme_id: str, *, auto_upload: bool) -> list[str]:
+    # Use module execution instead of a script path. Running
+    # scripts/ai_beauty/process_selected.py directly puts scripts/ai_beauty on
+    # sys.path, where operator.py shadows the stdlib operator module during
+    # argparse -> re -> enum imports on Windows/Python 3.11.
+    cmd = [sys.executable, "-m", "scripts.ai_beauty.process_selected", "--aweme-id", aweme_id]
     if auto_upload:
         cmd.append("--auto-upload")
+    return cmd
+
+
+def run_process_selected(aweme_id: str, *, auto_upload: bool) -> dict[str, Any]:
+    cmd = build_process_selected_command(aweme_id, auto_upload=auto_upload)
     proc = subprocess.run(cmd, cwd=str(PROJECT_BOOTSTRAP_ROOT), text=True, capture_output=True)
     if proc.returncode != 0:
         return {"aweme_id": aweme_id, "status": "process_failed", "error": (proc.stderr or proc.stdout)[-2000:]}
