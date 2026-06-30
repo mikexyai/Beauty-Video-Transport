@@ -1,6 +1,8 @@
 # Credentials / secrets
 apiKey/
 youtube-upload/config/
+config/*
+!config/*.example.*
 .env
 *.pem
 *.key
@@ -11,6 +13,22 @@ outputs/
 analysis/
 *.part
 *.tmp
+
+# Local Hermes/task scratch state
+.hermes/*
+!.hermes/
+!.hermes/protocols/
+!.hermes/protocols/**
+!.hermes/roles/
+!.hermes/roles/**
+!.hermes/templates/
+!.hermes/templates/**
+!.hermes/scripts/
+!.hermes/scripts/**
+.hermes/tasks/
+.hermes/evidence/
+.hermes/**/__pycache__/
+.hermes/**/*.pyc
 
 # Python / tooling
 __pycache__/
