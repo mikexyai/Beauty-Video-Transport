@@ -1,0 +1,4 @@
+# One Douyin URL per line. This AI Beauty collector does not use Chrome/CDP.
+# Examples:
+# https://www.douyin.com/video/7654321098765432101
+# https://www.douyin.com/user/self?modal_id=7654321098765432101
