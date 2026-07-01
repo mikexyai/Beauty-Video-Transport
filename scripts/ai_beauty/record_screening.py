@@ -11,7 +11,7 @@ PROJECT_BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_BOOTSTRAP_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_BOOTSTRAP_ROOT))
 
-from scripts.ai_beauty.db import connect
+from scripts.ai_beauty.repositories.screenings import screening_repository
 
 VALID_DECISIONS = {"approved", "skipped", "review", "failed"}
 
@@ -74,27 +74,7 @@ def build_screening_insert_params(aweme_id: str, data: dict[str, Any], *, model_
 
 def record_screening(aweme_id: str, data: dict[str, Any], *, model_name: str | None = None) -> int:
     params = build_screening_insert_params(aweme_id, data, model_name=model_name)
-    with connect() as conn:
-        row = conn.execute(
-            """
-            INSERT INTO beauty.ai_beauty_screenings (
-                aweme_id, model_name, contact_sheet_path, is_beauty_content,
-                suitable_for_ai_beauty, visible_minor_risk, low_quality, obvious_watermark,
-                duplicate_risk, sensuality_level, explicitness_level, content_type,
-                visual_style, safety_json, visual_labels_json, decision, skip_reason,
-                recommended_title, recommended_tags, selection_reason
-            ) VALUES (
-                %(aweme_id)s, %(model_name)s, %(contact_sheet_path)s, %(is_beauty_content)s,
-                %(suitable_for_ai_beauty)s, %(visible_minor_risk)s, %(low_quality)s, %(obvious_watermark)s,
-                %(duplicate_risk)s, %(sensuality_level)s, %(explicitness_level)s, %(content_type)s,
-                %(visual_style)s, %(safety_json)s, %(visual_labels_json)s, %(decision)s, %(skip_reason)s,
-                %(recommended_title)s, %(recommended_tags)s, %(selection_reason)s
-            ) RETURNING id
-            """,
-            params,
-        ).fetchone()
-        conn.commit()
-    return int(row[0])
+    return screening_repository.insert_screening(params)
 
 
 def main() -> int:

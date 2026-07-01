@@ -45,6 +45,8 @@ from scripts.ai_beauty.migrate_candidate_status_constraint import (
     invalid_statuses,
 )
 from scripts.ai_beauty.repositories.run_logs import RunLogRepository, build_run_summary
+from scripts.ai_beauty.repositories.screenings import ScreeningRepository
+from scripts.ai_beauty.repositories.uploads import UploadRepository
 from scripts.youtube_profile_guard import validate_channel_identity
 from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration
 from scripts.ai_beauty.duplicate_detection import assess_text_duplicate_risk, normalize_duplicate_text, hamming_distance
@@ -135,7 +137,7 @@ class AiBeautyCoreTests(unittest.TestCase):
             def commit(self):
                 pass
         fake = FakeConn()
-        with patch("scripts.ai_beauty.record_screening.connect", return_value=fake):
+        with patch("scripts.ai_beauty.record_screening.screening_repository", ScreeningRepository(connect_fn=lambda: fake)):
             screening_id = __import__("scripts.ai_beauty.record_screening", fromlist=["record_screening"]).record_screening(
                 "aweme123",
                 {"decision": "review", "recommended_tags": ["beauty"]},
@@ -144,6 +146,127 @@ class AiBeautyCoreTests(unittest.TestCase):
         joined = "\n".join(fake.queries).lower()
         self.assertIn("insert into beauty.ai_beauty_screenings", joined)
         self.assertNotIn("update beauty.ai_beauty_candidates", joined)
+
+    def test_screening_repository_inserts_screening_without_candidate_status_update(self):
+        class FakeConn:
+            def __init__(self):
+                self.calls = []
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def execute(self, query, params=None):
+                self.calls.append((str(query), params))
+                class Result:
+                    def fetchone(self_inner):
+                        return [321]
+                return Result()
+            def commit(self):
+                pass
+        fake = FakeConn()
+        repo = ScreeningRepository(connect_fn=lambda: fake)
+        screening_id = repo.insert_screening({"aweme_id": "aweme123", "decision": "review"})
+        self.assertEqual(screening_id, 321)
+        joined = "\n".join(query for query, _ in fake.calls).lower()
+        self.assertIn("insert into beauty.ai_beauty_screenings", joined)
+        self.assertNotIn("update beauty.ai_beauty_candidates", joined)
+
+    def test_record_screening_wrapper_delegates_to_repository(self):
+        class FakeRepository:
+            def __init__(self):
+                self.params = None
+            def insert_screening(self, params):
+                self.params = params
+                return 654
+        fake_repo = FakeRepository()
+        with patch("scripts.ai_beauty.record_screening.screening_repository", fake_repo):
+            screening_id = __import__("scripts.ai_beauty.record_screening", fromlist=["record_screening"]).record_screening(
+                "aweme456",
+                {"decision": "review", "recommended_tags": ["beauty"]},
+            )
+        self.assertEqual(screening_id, 654)
+        self.assertEqual(fake_repo.params["aweme_id"], "aweme456")
+
+    def test_upload_repository_reads_and_records_uploads(self):
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row
+            def fetchone(self):
+                return self.row
+        class FakeConn:
+            def __init__(self):
+                self.calls = []
+                self.rows = [
+                    ("aweme1", "video.mp4", 7, "Title", ["beauty"], "reason"),
+                    ("aweme2",),
+                    None,
+                    None,
+                ]
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def execute(self, query, params=None):
+                self.calls.append((str(query), params))
+                return FakeResult(self.rows.pop(0))
+            def commit(self):
+                pass
+        fake = FakeConn()
+        repo = UploadRepository(connect_fn=lambda: fake)
+        info = repo.latest_approved("aweme1")
+        next_id = repo.next_approved_aweme_id()
+        repo.record_upload(info, {"video_id": "yt123"})
+        self.assertEqual(info["title"], "Title")
+        self.assertEqual(next_id, "aweme2")
+        joined = "\n".join(query for query, _ in fake.calls).lower()
+        self.assertIn("from beauty.ai_beauty_candidates", joined)
+        self.assertIn("insert into beauty.ai_beauty_uploads", joined)
+        self.assertIn("update beauty.ai_beauty_candidates", joined)
+
+    def test_upload_wrappers_delegate_to_repository(self):
+        class FakeRepository:
+            def __init__(self):
+                self.upload = None
+            def latest_approved(self, aweme_id):
+                return {"aweme_id": aweme_id}
+            def next_approved_aweme_id(self):
+                return "next-aweme"
+            def record_upload(self, info, upload_result):
+                self.upload = (info, upload_result)
+        fake_repo = FakeRepository()
+        with patch("scripts.ai_beauty.upload_ai_beauty.upload_repository", fake_repo):
+            module = __import__("scripts.ai_beauty.upload_ai_beauty", fromlist=["latest_approved"])
+            self.assertEqual(module.latest_approved("aweme9"), {"aweme_id": "aweme9"})
+            self.assertEqual(module.next_approved_aweme_id(), "next-aweme")
+            module.record_upload({"aweme_id": "aweme9"}, {"video_id": "yt9"})
+        self.assertEqual(fake_repo.upload, ({"aweme_id": "aweme9"}, {"video_id": "yt9"}))
+
+    def test_upload_repository_tracks_local_file_cleanup_state(self):
+        class FakeResult:
+            def __init__(self, row=None):
+                self.row = row
+            def fetchone(self):
+                return self.row
+        class FakeConn:
+            def __init__(self):
+                self.calls = []
+                self.rows = [("downloads/video.mp4",), None]
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def execute(self, query, params=None):
+                self.calls.append((str(query), params))
+                return FakeResult(self.rows.pop(0))
+            def commit(self):
+                pass
+        fake = FakeConn()
+        repo = UploadRepository(connect_fn=lambda: fake)
+        self.assertEqual(repo.fetch_candidate_local_video_path("aweme1"), "downloads/video.mp4")
+        repo.mark_local_file_deleted("aweme1", True)
+        joined = "\n".join(query for query, _ in fake.calls).lower()
+        self.assertIn("select local_video_path from beauty.ai_beauty_candidates", joined)
+        self.assertIn("update beauty.ai_beauty_uploads set local_file_deleted", joined)
 
     def test_extract_json_object_handles_markdown_fenced_json(self):
         raw = 'Analysis:\n```json\n{"decision":"approved","recommended_title":"T","recommended_tags":["beauty"]}\n```'

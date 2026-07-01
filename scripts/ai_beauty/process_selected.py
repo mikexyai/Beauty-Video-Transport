@@ -13,6 +13,7 @@ if str(PROJECT_BOOTSTRAP_ROOT) not in sys.path:
 from scripts.ai_beauty.db import connect
 from scripts.ai_beauty.download_candidate import process_candidate
 from scripts.ai_beauty.repositories.candidates import DEFAULT_CANDIDATE_REPOSITORY, CandidateRepository
+from scripts.ai_beauty.repositories.uploads import upload_repository
 from scripts.ai_beauty.state import ARCHIVED_STATUS, BATCH_SELECTED_STATUS, SCREENED_OUT_STATUS
 from scripts.ai_beauty.record_screening import record_screening
 from scripts.ai_beauty.upload_ai_beauty import main as upload_main
@@ -89,18 +90,16 @@ def archive_candidate(
 
 
 def delete_local_video(aweme_id: str, *, update_upload_record: bool = True) -> dict[str, Any]:
-    with connect() as conn:
-        row = conn.execute("SELECT local_video_path FROM beauty.ai_beauty_candidates WHERE aweme_id=%s", (aweme_id,)).fetchone()
-        path = Path(row[0]) if row and row[0] else None
-        deleted = False
-        size_before = None
-        if path and path.exists():
-            size_before = path.stat().st_size
-            path.unlink()
-            deleted = not path.exists()
-        if update_upload_record:
-            conn.execute("UPDATE beauty.ai_beauty_uploads SET local_file_deleted=%s WHERE aweme_id=%s", (deleted, aweme_id))
-        conn.commit()
+    local_video_path = upload_repository.fetch_candidate_local_video_path(aweme_id)
+    path = Path(local_video_path) if local_video_path else None
+    deleted = False
+    size_before = None
+    if path and path.exists():
+        size_before = path.stat().st_size
+        path.unlink()
+        deleted = not path.exists()
+    if update_upload_record:
+        upload_repository.mark_local_file_deleted(aweme_id, deleted)
     return {"path": str(path) if path else None, "size_before": size_before, "deleted": deleted}
 
 

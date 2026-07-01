@@ -12,7 +12,8 @@ PROJECT_BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_BOOTSTRAP_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_BOOTSTRAP_ROOT))
 
-from scripts.ai_beauty.db import PROJECT_ROOT, connect
+from scripts.ai_beauty.db import PROJECT_ROOT
+from scripts.ai_beauty.repositories.uploads import upload_repository
 
 YOUTUBE_UPLOAD = PROJECT_ROOT / "youtube-upload" / "youtube_upload.py"
 
@@ -42,45 +43,11 @@ def build_upload_args(*, file_path: str, title: str, tags: list[str], mode: str 
 
 
 def latest_approved(aweme_id: str) -> dict[str, Any]:
-    with connect() as conn:
-        row = conn.execute(
-            """
-            SELECT c.aweme_id, c.local_video_path, s.id AS screening_id, s.recommended_title,
-                   s.recommended_tags, s.selection_reason
-            FROM beauty.ai_beauty_candidates c
-            JOIN beauty.ai_beauty_screenings s ON s.aweme_id = c.aweme_id
-            WHERE c.aweme_id = %s AND s.decision = 'approved'
-            ORDER BY s.screened_at DESC, s.id DESC
-            LIMIT 1
-            """,
-            (aweme_id,),
-        ).fetchone()
-    if not row:
-        raise SystemExit(f"No approved AI Beauty screening found for aweme_id {aweme_id}")
-    return {
-        "aweme_id": row[0],
-        "local_video_path": row[1],
-        "screening_id": row[2],
-        "title": row[3],
-        "tags": list(row[4] or []),
-        "selection_reason": row[5],
-    }
+    return upload_repository.latest_approved(aweme_id)
 
 
 def next_approved_aweme_id() -> str | None:
-    with connect() as conn:
-        row = conn.execute(
-            """
-            SELECT c.aweme_id
-            FROM beauty.ai_beauty_candidates c
-            JOIN beauty.ai_beauty_screenings s ON s.aweme_id = c.aweme_id
-            LEFT JOIN beauty.ai_beauty_uploads u ON u.aweme_id = c.aweme_id
-            WHERE c.candidate_status = 'approved' AND s.decision = 'approved' AND u.id IS NULL
-            ORDER BY c.priority_score DESC, c.discovered_at ASC, s.screened_at DESC
-            LIMIT 1
-            """
-        ).fetchone()
-    return row[0] if row else None
+    return upload_repository.next_approved_aweme_id()
 
 
 def parse_upload_json(stdout: str) -> dict[str, Any]:
@@ -115,43 +82,7 @@ def parse_upload_json(stdout: str) -> dict[str, Any]:
 
 
 def record_upload(info: dict[str, Any], upload_result: dict[str, Any]) -> None:
-    video_id = upload_result.get("video_id") or upload_result.get("id")
-    if not video_id:
-        raise ValueError("upload result did not include video_id")
-    youtube_url = upload_result.get("url") or f"https://www.youtube.com/watch?v={video_id}"
-    with connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO beauty.ai_beauty_uploads (
-                aweme_id, youtube_video_id, youtube_url, youtube_profile, title, description,
-                tags, privacy_status, upload_status, upload_response_json, screening_id,
-                selection_reason, local_file_deleted
-            ) VALUES (%s, %s, %s, 'default', %s, '', %s, 'public', 'uploaded', %s, %s, %s, %s)
-            ON CONFLICT (aweme_id) DO UPDATE SET
-                youtube_video_id = EXCLUDED.youtube_video_id,
-                youtube_url = EXCLUDED.youtube_url,
-                title = EXCLUDED.title,
-                tags = EXCLUDED.tags,
-                upload_status = EXCLUDED.upload_status,
-                upload_response_json = EXCLUDED.upload_response_json,
-                screening_id = EXCLUDED.screening_id,
-                selection_reason = EXCLUDED.selection_reason,
-                local_file_deleted = EXCLUDED.local_file_deleted
-            """,
-            (
-                info["aweme_id"],
-                video_id,
-                youtube_url,
-                info["title"],
-                info["tags"],
-                json.dumps(upload_result, ensure_ascii=False),
-                info["screening_id"],
-                info.get("selection_reason"),
-                False,
-            ),
-        )
-        conn.execute("UPDATE beauty.ai_beauty_candidates SET candidate_status='uploaded' WHERE aweme_id=%s", (info["aweme_id"],))
-        conn.commit()
+    upload_repository.record_upload(info, upload_result)
 
 
 def main() -> int:
