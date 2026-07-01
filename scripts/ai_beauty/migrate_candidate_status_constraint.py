@@ -16,12 +16,16 @@ from scripts.ai_beauty.state import ALL_CANDIDATE_STATUSES
 CONSTRAINT_NAME = "ai_beauty_candidates_status_check"
 
 
+def candidate_status_allowed_values_sql() -> str:
+    return ", ".join(sql_literal(status) for status in ALL_CANDIDATE_STATUSES)
+
+
 def sql_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
 def build_candidate_status_constraint_sql() -> str:
-    allowed = ", ".join(sql_literal(status) for status in ALL_CANDIDATE_STATUSES)
+    allowed = candidate_status_allowed_values_sql()
     return f"""
 ALTER TABLE beauty.ai_beauty_candidates
 DROP CONSTRAINT IF EXISTS {CONSTRAINT_NAME};
@@ -29,6 +33,13 @@ DROP CONSTRAINT IF EXISTS {CONSTRAINT_NAME};
 ALTER TABLE beauty.ai_beauty_candidates
 ADD CONSTRAINT {CONSTRAINT_NAME}
 CHECK (candidate_status IN ({allowed}));
+""".strip()
+
+
+def build_candidate_status_constraint_rollback_sql() -> str:
+    return f"""
+ALTER TABLE beauty.ai_beauty_candidates
+DROP CONSTRAINT IF EXISTS {CONSTRAINT_NAME};
 """.strip()
 
 

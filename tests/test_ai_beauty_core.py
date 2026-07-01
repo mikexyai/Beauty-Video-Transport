@@ -1,3 +1,4 @@
+import re
 import sys
 import unittest
 from unittest.mock import patch
@@ -16,7 +17,10 @@ from scripts.ai_beauty.state import (
     ACTIVE_STATUSES,
     ARCHIVE_PRUNED_STATUS,
     ARCHIVED_STATUS,
+    ALL_CANDIDATE_STATUSES,
+    APPROVED_STATUS,
     BATCH_SELECTED_STATUS,
+    DOWNLOADED_STATUS,
     FAILED_STATUS,
     NEW_STATUS,
     PROCESSABLE_STATUSES,
@@ -35,7 +39,11 @@ from scripts.ai_beauty.process_selected import build_screening_template, select_
 from scripts.ai_beauty.verify_uploads import summarize_video_status
 from scripts.ai_beauty.repositories.candidates import CandidateRepository
 from scripts.ai_beauty.normalize_screening_json import extract_json_object, normalize_screening
-from scripts.ai_beauty.migrate_candidate_status_constraint import build_candidate_status_constraint_sql, invalid_statuses
+from scripts.ai_beauty.migrate_candidate_status_constraint import (
+    build_candidate_status_constraint_rollback_sql,
+    build_candidate_status_constraint_sql,
+    invalid_statuses,
+)
 from scripts.ai_beauty.repositories.run_logs import RunLogRepository, build_run_summary
 from scripts.youtube_profile_guard import validate_channel_identity
 from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration
@@ -490,8 +498,31 @@ class AiBeautyCoreTests(unittest.TestCase):
     def test_candidate_status_constraint_sql_uses_state_statuses(self):
         sql = build_candidate_status_constraint_sql()
         self.assertIn("ai_beauty_candidates_status_check", sql)
-        for status in [NEW_STATUS, ARCHIVED_STATUS, BATCH_SELECTED_STATUS, SCREENED_OUT_STATUS, UPLOADED_STATUS, ARCHIVE_PRUNED_STATUS, FAILED_STATUS]:
+        for status in ALL_CANDIDATE_STATUSES:
             self.assertIn(status, sql)
+        for status in [NEW_STATUS, ARCHIVED_STATUS, BATCH_SELECTED_STATUS, SCREENED_OUT_STATUS, UPLOADED_STATUS, ARCHIVE_PRUNED_STATUS, FAILED_STATUS, DOWNLOADED_STATUS, APPROVED_STATUS]:
+            self.assertIn(status, sql)
+        self.assertEqual(set(re.findall(r"'([^']+)'", sql)), set(ALL_CANDIDATE_STATUSES))
+        self.assertEqual(sql.count("ADD CONSTRAINT ai_beauty_candidates_status_check"), 1)
+
+    def test_candidate_status_constraint_rollback_sql_drops_only_named_constraint(self):
+        sql = build_candidate_status_constraint_rollback_sql()
+        self.assertIn("ALTER TABLE beauty.ai_beauty_candidates", sql)
+        self.assertIn("DROP CONSTRAINT IF EXISTS ai_beauty_candidates_status_check", sql)
+        self.assertNotIn("DROP TABLE", sql.upper())
+
+    def test_candidate_status_constraint_migration_artifact_documents_contract(self):
+        sql = Path("sql/ai_beauty_candidate_status_constraint.sql").read_text(encoding="utf-8")
+        self.assertIn("SELECT candidate_status, count(*) AS row_count", sql)
+        self.assertIn("ADD CONSTRAINT ai_beauty_candidates_status_check", sql)
+        self.assertIn("DROP CONSTRAINT IF EXISTS ai_beauty_candidates_status_check", sql)
+        self.assertIn("Rollback contract", sql)
+        for status in ALL_CANDIDATE_STATUSES:
+            self.assertIn(f"'{status}'", sql)
+        allowed_blocks = re.findall(r"candidate_status(?: NOT)? IN \((.*?)\)", sql, re.DOTALL)
+        self.assertEqual(len(allowed_blocks), 2)
+        for allowed_block in allowed_blocks:
+            self.assertEqual(set(re.findall(r"'([^']+)'", allowed_block)), set(ALL_CANDIDATE_STATUSES))
 
     def test_invalid_statuses_detects_rows_outside_state_module(self):
         rows = [("archived", 2), ("bad_status", 1), (SCREENED_OUT_STATUS, 3)]

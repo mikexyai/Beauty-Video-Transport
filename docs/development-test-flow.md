@@ -32,6 +32,7 @@ All architecture-improvement work should be delivered through Kanban tasks with 
    - Run the full local test command for touched area.
    - Run compile checks.
    - For DB/cron/upload work, run a dry-run or safe status command proving behavior.
+   - For DB migrations, include an audit query, apply SQL, verification SQL, and rollback SQL in a repo SQL artifact.
 - For uploaded AI Beauty records, treat `local_video_path` as a historical path when `local_file_deleted=true`; verify current file existence separately instead of assuming the path still exists.
 
 6. **Document**
