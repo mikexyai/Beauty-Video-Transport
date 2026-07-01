@@ -43,7 +43,7 @@ def summarize_operator_iteration(results: list[dict[str, Any]]) -> dict[str, Any
     hard_blockers: list[str] = []
     for item in results:
         status = item.get("status")
-        if status in {"download_failed", "upload_failed"}:
+        if status in {"download_failed", "upload_failed", "process_failed", "process_output_unparseable"}:
             suffix = f":{item.get('aweme_id')}" if item.get("aweme_id") else ""
             hard_blockers.append(f"{status}{suffix}")
         if status == "needs_screening":
@@ -76,11 +76,26 @@ def run_process_selected(aweme_id: str, *, auto_upload: bool) -> dict[str, Any]:
     cmd = build_process_selected_command(aweme_id, auto_upload=auto_upload)
     proc = subprocess.run(cmd, cwd=str(PROJECT_BOOTSTRAP_ROOT), text=True, capture_output=True)
     if proc.returncode != 0:
-        return {"aweme_id": aweme_id, "status": "process_failed", "error": (proc.stderr or proc.stdout)[-2000:]}
+        return {
+            "aweme_id": aweme_id,
+            "status": "process_failed",
+            "failed_step": "process_selected",
+            "error": (proc.stderr or proc.stdout)[-2000:],
+            "command": cmd,
+            "returncode": proc.returncode,
+        }
     try:
         payload = json.loads(proc.stdout)
     except json.JSONDecodeError:
-        return {"aweme_id": aweme_id, "status": "process_output_unparseable", "stdout": proc.stdout[-2000:]}
+        return {
+            "aweme_id": aweme_id,
+            "status": "process_output_unparseable",
+            "failed_step": "process_selected",
+            "error": "process_selected output was not valid JSON",
+            "stdout": proc.stdout[-2000:],
+            "command": cmd,
+            "returncode": proc.returncode,
+        }
     results = payload.get("results") or []
     return results[0] if results else {"aweme_id": aweme_id, "status": "no_result"}
 
@@ -159,6 +174,8 @@ def run_operator(
                 hard_blocker = hard_blocker or "no_active_candidates"
 
     final_uploads = count_uploads() - starting_upload_count
+    if hard_blocker:
+        steps.append({"step": "blocker", "reason": hard_blocker, "blocker": hard_blocker})
     final_summary = build_run_summary(steps)
     final_status = "ok" if final_uploads >= target_uploads else "blocked" if hard_blocker else "partial"
     DEFAULT_RUN_LOG_REPOSITORY.finish_run(

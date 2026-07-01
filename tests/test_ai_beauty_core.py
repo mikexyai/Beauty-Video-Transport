@@ -48,7 +48,7 @@ from scripts.ai_beauty.repositories.run_logs import RunLogRepository, build_run_
 from scripts.ai_beauty.repositories.screenings import ScreeningRepository
 from scripts.ai_beauty.repositories.uploads import UploadRepository
 from scripts.youtube_profile_guard import validate_channel_identity
-from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration
+from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration, run_process_selected
 from scripts.ai_beauty.duplicate_detection import assess_text_duplicate_risk, normalize_duplicate_text, hamming_distance
 from scripts.bilibili_pipeline import decide_bilibili_candidate_action, route_bilibili_upload, build_bilibili_pipeline_plan
 from scripts.ai_beauty.fetch_metrics import parse_video_metric_item, build_metric_upsert_params
@@ -662,6 +662,98 @@ class AiBeautyCoreTests(unittest.TestCase):
         self.assertEqual(summary["uploads"], 1)
         self.assertEqual(summary["screened"], 1)
         self.assertEqual(summary["blockers"], ["quota"])
+
+    def test_build_run_summary_consolidates_workflow_step_counts_and_cleanup(self):
+        summary = build_run_summary([
+            {
+                "step": "collect_select",
+                "collection": {"searches": [{"found": 4, "upserted": 3}], "total_found": 4, "total_upserted": 3, "errors": []},
+                "selected": ["a", "b"],
+            },
+            {"step": "reselect", "selected": ["c"]},
+            {
+                "step": "process_iteration",
+                "results": [
+                    {"aweme_id": "a", "status": "uploaded", "decision": "approved", "dry_run_rc": 0, "upload_rc": 0, "cleanup": {"deleted": True}},
+                    {"aweme_id": "b", "status": "screened_not_uploaded", "decision": "review", "cleanup": {"deleted": False}},
+                    {"aweme_id": "c", "status": "needs_screening"},
+                ],
+            },
+            {"step": "verification", "checked": 1, "ok": 1, "failed": 0},
+        ])
+        self.assertEqual(summary["counts"]["collection"]["found"], 4)
+        self.assertEqual(summary["counts"]["collection"]["upserted"], 3)
+        self.assertEqual(summary["counts"]["selection"]["selected"], 2)
+        self.assertEqual(summary["counts"]["selection"]["reselected"], 1)
+        self.assertEqual(summary["counts"]["download_process"]["uploaded"], 1)
+        self.assertEqual(summary["counts"]["screening"]["screened"], 2)
+        self.assertEqual(summary["counts"]["screening"]["skipped"], 1)
+        self.assertEqual(summary["counts"]["upload"]["attempted"], 1)
+        self.assertEqual(summary["counts"]["upload"]["uploaded"], 1)
+        self.assertEqual(summary["counts"]["verification"]["checked"], 1)
+        self.assertEqual(summary["counts"]["cleanup"]["attempted"], 2)
+        self.assertEqual(summary["counts"]["cleanup"]["deleted"], 1)
+
+    def test_build_run_summary_records_blocker_retry_context(self):
+        summary = build_run_summary([
+            {
+                "step": "process_iteration",
+                "results": [
+                    {
+                        "aweme_id": "aweme-fail",
+                        "status": "upload_failed",
+                        "error": "uploader failed",
+                        "dry_run_rc": 0,
+                        "upload_rc": 7,
+                        "command": ["python", "youtube_upload.py", "upload"],
+                    }
+                ],
+            },
+            {"step": "blocker", "aweme_id": "aweme-block", "status": "download_failed", "reason": "no media", "returncode": 2},
+        ])
+        self.assertEqual(summary["counts"]["blockers"], 2)
+        self.assertEqual(summary["blockers"], ["upload_failed:aweme-fail", "no media"])
+        self.assertEqual(summary["retry_context"][0]["aweme_id"], "aweme-fail")
+        self.assertEqual(summary["retry_context"][0]["failed_step"], "upload")
+        self.assertEqual(summary["retry_context"][0]["returncode"], 7)
+        self.assertEqual(summary["retry_context"][0]["command"], ["python", "youtube_upload.py", "upload"])
+        self.assertEqual(summary["retry_context"][1]["failed_step"], "download_process")
+        self.assertEqual(summary["retry_context"][1]["returncode"], 2)
+
+    def test_run_process_selected_includes_command_and_returncode_on_failures(self):
+        fake_proc = type("Proc", (), {"returncode": 5, "stderr": "boom", "stdout": ""})()
+        with patch("scripts.ai_beauty.operator.subprocess.run", return_value=fake_proc):
+            result = run_process_selected("aweme9", auto_upload=True)
+        self.assertEqual(result["aweme_id"], "aweme9")
+        self.assertEqual(result["status"], "process_failed")
+        self.assertEqual(result["returncode"], 5)
+        self.assertEqual(result["failed_step"], "process_selected")
+        self.assertIn("scripts.ai_beauty.process_selected", result["command"])
+
+    def test_summarize_operator_iteration_flags_process_failures(self):
+        summary = summarize_operator_iteration([
+            {"status": "process_failed", "aweme_id": "p1"},
+            {"status": "process_output_unparseable", "aweme_id": "p2"},
+        ])
+        self.assertEqual(summary["hard_blockers"], ["process_failed:p1", "process_output_unparseable:p2"])
+
+    def test_build_run_summary_ignores_malformed_returncode_metadata(self):
+        summary = build_run_summary([
+            {
+                "step": "process_iteration",
+                "results": [
+                    {"aweme_id": "bad-rc", "status": "upload_failed", "dry_run_rc": ["not-an-int"], "error": "bad rc"},
+                    {"aweme_id": "bad-upload-rc", "status": "upload_failed", "upload_rc": {"bad": "rc"}, "error": "bad upload rc"},
+                ],
+            },
+            {"step": "upload", "status": "upload_failed", "returncode": ["boom"], "error": "bad top-level rc"},
+        ])
+        self.assertEqual(summary["counts"]["blockers"], 3)
+        self.assertEqual(summary["retry_context"][0]["aweme_id"], "bad-rc")
+        self.assertNotIn("returncode", summary["retry_context"][0])
+        self.assertEqual(summary["retry_context"][1]["aweme_id"], "bad-upload-rc")
+        self.assertNotIn("returncode", summary["retry_context"][1])
+        self.assertNotIn("returncode", summary["retry_context"][2])
 
     def test_run_log_repository_builds_insert_and_finish_payloads(self):
         class FakeResult:

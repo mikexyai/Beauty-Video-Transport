@@ -107,10 +107,14 @@ def should_cleanup_after_decision(decision: str | None) -> bool:
     return str(decision or "").strip().lower() in {"skipped", "review", "failed"}
 
 
+def build_upload_cli_argv(aweme_id: str, *, dry_run: bool = False) -> list[str]:
+    return ["upload_ai_beauty.py", "--aweme-id", aweme_id, "--dry-run" if dry_run else "--upload"]
+
+
 def run_upload_cli(aweme_id: str, *, dry_run: bool = False) -> int:
     old_argv = sys.argv[:]
     try:
-        sys.argv = ["upload_ai_beauty.py", "--aweme-id", aweme_id, "--dry-run" if dry_run else "--upload"]
+        sys.argv = build_upload_cli_argv(aweme_id, dry_run=dry_run)
         return int(upload_main())
     finally:
         sys.argv = old_argv
@@ -155,12 +159,21 @@ def process_one(row: dict[str, Any], *, auto_upload: bool = False, template_only
         result["status"] = "approved_not_uploaded"
         result["message"] = "Rerun with --auto-upload to upload approved screening."
         return result
+    dry_run_command = build_upload_cli_argv(aweme_id, dry_run=True)
+    upload_command = build_upload_cli_argv(aweme_id, dry_run=False)
     dry_rc = run_upload_cli(aweme_id, dry_run=True)
     upload_rc = run_upload_cli(aweme_id, dry_run=False) if dry_rc == 0 else dry_rc
+    result["dry_run_command"] = dry_run_command
+    result["upload_command"] = upload_command
     result["dry_run_rc"] = dry_rc
     result["upload_rc"] = upload_rc
     result["cleanup"] = delete_local_video(aweme_id) if upload_rc == 0 else None
     result["status"] = "uploaded" if upload_rc == 0 else "upload_failed"
+    if upload_rc != 0:
+        result["failed_step"] = "upload"
+        result["returncode"] = upload_rc
+        result["command"] = dry_run_command if dry_rc != 0 else upload_command
+        result["error"] = "dry-run upload check failed" if dry_rc != 0 else "upload command failed"
     return result
 
 
