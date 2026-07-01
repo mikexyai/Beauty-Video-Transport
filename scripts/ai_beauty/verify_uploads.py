@@ -10,6 +10,7 @@ if str(PROJECT_BOOTSTRAP_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_BOOTSTRAP_ROOT))
 
 from scripts.ai_beauty.db import connect
+from scripts.ai_beauty.report_status import summarize_local_artifact_state
 
 EXPECTED_CHANNEL_ID = "UCEPE24TT9ZpGpVs0vv3i7mw"
 EXPECTED_CHANNEL_TITLE = "AI Beauty"
@@ -63,15 +64,26 @@ def fetch_recent_upload_records(limit: int) -> list[dict[str, Any]]:
     with connect() as conn:
         cur = conn.execute(
             """
-            SELECT aweme_id, youtube_video_id, youtube_url, title, local_file_deleted
-            FROM beauty.ai_beauty_uploads
-            ORDER BY uploaded_at DESC, id DESC
+            SELECT u.aweme_id, u.youtube_video_id, u.youtube_url, u.title,
+                   u.local_file_deleted, c.local_video_path
+            FROM beauty.ai_beauty_uploads u
+            LEFT JOIN beauty.ai_beauty_candidates c ON c.aweme_id = u.aweme_id
+            ORDER BY u.uploaded_at DESC, u.id DESC
             LIMIT %s
             """,
             (limit,),
         )
         cols = [d.name for d in cur.description]
         return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+def attach_local_cleanup_context(check: dict[str, Any], rec: dict[str, Any]) -> None:
+    check["aweme_id"] = rec.get("aweme_id")
+    check["youtube_url"] = rec.get("youtube_url")
+    check.update(summarize_local_artifact_state(rec.get("local_video_path"), rec.get("local_file_deleted")))
+    if rec.get("local_file_deleted") is not True:
+        check.setdefault("problems", []).append("local_file_not_deleted")
+        check["ok"] = False
 
 
 def verify_video_ids(video_ids: list[str], *, delayed: bool = False) -> list[dict[str, Any]]:
@@ -108,12 +120,7 @@ def main() -> int:
     checks = verify_video_ids([r["youtube_video_id"] for r in records if r.get("youtube_video_id")], delayed=args.delayed)
     for check in checks:
         rec = by_id.get(check.get("video_id"), {})
-        check["aweme_id"] = rec.get("aweme_id")
-        check["youtube_url"] = rec.get("youtube_url")
-        check["local_file_deleted"] = rec.get("local_file_deleted")
-        if rec.get("local_file_deleted") is not True:
-            check.setdefault("problems", []).append("local_file_not_deleted")
-            check["ok"] = False
+        attach_local_cleanup_context(check, rec)
     report = {"count": len(checks), "ok_count": sum(1 for c in checks if c.get("ok")), "checks": checks}
     print(json.dumps(report, ensure_ascii=False, indent=2, default=str))
     return 0 if all(c.get("ok") for c in checks) else 1

@@ -36,7 +36,7 @@ from scripts.ai_beauty.upload_ai_beauty import build_upload_args, parse_upload_j
 from scripts.ai_beauty.report_status import latest_uploads, summarize_local_artifact_state
 from scripts.ai_beauty.scheduled_run import build_search_plan, parse_keywords
 from scripts.ai_beauty.process_selected import build_screening_template, select_batch_rows, should_cleanup_after_decision
-from scripts.ai_beauty.verify_uploads import summarize_video_status
+from scripts.ai_beauty.verify_uploads import attach_local_cleanup_context, fetch_recent_upload_records, summarize_video_status
 from scripts.ai_beauty.repositories.candidates import CandidateRepository
 from scripts.ai_beauty.normalize_screening_json import extract_json_object, normalize_screening
 from scripts.ai_beauty.migrate_candidate_status_constraint import (
@@ -855,6 +855,54 @@ class AiBeautyCoreTests(unittest.TestCase):
         self.assertEqual(summary["local_video_path_role"], "historical_deleted")
         self.assertFalse(summary["local_path_exists"])
         self.assertTrue(summary["local_file_deleted"])
+
+    def test_verify_upload_check_reports_historical_deleted_local_path(self):
+        check = {"video_id": "vid1", "ok": True, "problems": []}
+        record = {
+            "aweme_id": "aweme1",
+            "youtube_url": "https://youtu.be/vid1",
+            "local_video_path": "downloads/douyin_ai_beauty/deleted.mp4",
+            "local_file_deleted": True,
+        }
+        attach_local_cleanup_context(check, record)
+        self.assertEqual(Path(check["local_video_path"]), Path("downloads/douyin_ai_beauty/deleted.mp4"))
+        self.assertFalse(check["local_path_exists"])
+        self.assertTrue(check["local_file_deleted"])
+        self.assertEqual(check["local_video_path_role"], "historical_deleted")
+        self.assertTrue(check["ok"])
+        self.assertNotIn("local_file_not_deleted", check["problems"])
+
+    def test_fetch_recent_upload_records_includes_candidate_local_path(self):
+        class FakeCursor:
+            description = [
+                type("Col", (), {"name": "aweme_id"}),
+                type("Col", (), {"name": "youtube_video_id"}),
+                type("Col", (), {"name": "youtube_url"}),
+                type("Col", (), {"name": "title"}),
+                type("Col", (), {"name": "local_file_deleted"}),
+                type("Col", (), {"name": "local_video_path"}),
+            ]
+            def fetchall(self):
+                return [("aweme1", "vid1", "https://youtu.be/vid1", "Title", True, "downloads/deleted.mp4")]
+        class FakeConn:
+            def __init__(self):
+                self.query = None
+                self.params = None
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                return False
+            def execute(self, query, params=None):
+                self.query = str(query).lower()
+                self.params = params
+                return FakeCursor()
+        fake = FakeConn()
+        with patch("scripts.ai_beauty.verify_uploads.connect", return_value=fake):
+            records = fetch_recent_upload_records(1)
+        self.assertIn("left join beauty.ai_beauty_candidates", fake.query)
+        self.assertEqual(fake.params, (1,))
+        self.assertEqual(records[0]["local_video_path"], "downloads/deleted.mp4")
+        self.assertTrue(records[0]["local_file_deleted"])
 
 
 if __name__ == "__main__":
