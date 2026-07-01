@@ -57,6 +57,7 @@ All architecture-improvement work should be delivered through Kanban tasks with 
 ### Cron/operator tasks
 
 - Dry-run or manual run output.
+- For AI Beauty operator work, keep `docs/ai-beauty-operator-cron-contract.md` aligned with deterministic Python ownership and Hermes vision `screening.json` handoff.
 - Confirmation cron prompt/job config was updated if applicable.
 - Run-log row or output artifact path.
 

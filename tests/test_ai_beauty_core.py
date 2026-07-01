@@ -729,6 +729,53 @@ class AiBeautyCoreTests(unittest.TestCase):
             "--auto-upload",
         ])
 
+    def test_ai_beauty_skill_documents_operator_vision_contract(self):
+        text = Path("douyin-ai-beauty-channel-manager.SKILL.md").read_text(encoding="utf-8")
+        required_terms = [
+            "two-stage deterministic + vision workflow",
+            "python scripts/ai_beauty/operator.py --target-uploads 3 --run-id <run_id>",
+            "needs_screening",
+            "vision_required:<aweme_id>",
+            "analysis/douyin_ai_beauty/<aweme_id>/contact_sheet",
+            "normalize_screening_json.py",
+            "screening.json",
+            "rerun the same operator command",
+            "direct processing command",
+            "ai_beauty_run_logs",
+            "run_id",
+            "screened/skipped/reviewed candidates",
+            "local cleanup evidence",
+        ]
+        for term in required_terms:
+            self.assertIn(term, text)
+
+        stale_contradictions = [
+            "Collect Douyin beauty candidates without Chrome/CDP.",
+            "no Chrome/CDP calls were used;",
+            "lightweight non-CDP collection",
+        ]
+        for term in stale_contradictions:
+            self.assertNotIn(term, text)
+
+    def test_ai_beauty_cron_contract_documents_stable_handoff(self):
+        text = Path("docs/ai-beauty-operator-cron-contract.md").read_text(encoding="utf-8")
+        required_terms = [
+            "python scripts/ai_beauty/operator.py --target-uploads 3 --run-id <run_id>",
+            "needs_screening",
+            "vision_required:<aweme_id>",
+            "normalize_screening_json.py",
+            "screening.json",
+            "ai_beauty_run_logs",
+            "run_id",
+            "uploads",
+            "screened/skipped/reviewed candidates",
+            "blockers",
+            "local cleanup evidence",
+            "Do not edit `jobs.json` directly",
+        ]
+        for term in required_terms:
+            self.assertIn(term, text)
+
     def test_normalize_duplicate_text_removes_noise_and_case(self):
         self.assertEqual(normalize_duplicate_text("AI Beauty! #Portrait ✨"), "ai beauty portrait")
 

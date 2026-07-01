@@ -1,6 +1,6 @@
 ---
 name: douyin-ai-beauty-channel-manager
-description: "Use when autonomously operating only the AI Beauty YouTube channel from Douyin beauty content using lightweight non-CDP collection, isolated AI Beauty database tables, visual screening, YouTube uploads, and Analytics-driven strategy updates."
+description: "Use when autonomously operating only the AI Beauty YouTube channel from Douyin beauty content using deterministic Python collection/download/template/upload/run logs, Hermes vision screening, isolated AI Beauty database tables, and Analytics-driven strategy updates."
 version: 0.1.0-draft
 author: Hermes Agent
 license: private
@@ -15,16 +15,15 @@ metadata:
 
 ## Overview
 
-This skill defines the agent role for autonomously operating the YouTube **AI Beauty** channel from Douyin beauty content. The operating loop is:
+This skill defines the agent role for autonomously operating the YouTube **AI Beauty** channel from Douyin beauty content. The operating loop is a two-stage deterministic + vision workflow:
 
-1. collect Douyin beauty candidates with lightweight non-browser tooling;
-2. store candidates in AI-Beauty-only database tables;
-3. download and verify candidate videos;
-4. screen visual content and generate metadata;
-5. upload selected videos only to the AI Beauty YouTube profile;
-6. record uploads in isolated AI Beauty tables;
-7. analyze AI Beauty YouTube performance;
-8. update future selection strategy based on real channel data.
+1. deterministic Python collects Douyin beauty candidates with lightweight tooling and controlled read-only CDP fallback only when detail/playback data requires page context;
+2. deterministic Python stores candidates in AI-Beauty-only database tables;
+3. deterministic Python downloads, verifies, samples frames, writes contact sheets, builds templates, uploads approved videos, and writes run logs;
+4. Hermes vision reviews the contact sheet and supplies normalized `screening.json` before approval/upload can proceed;
+5. deterministic Python records uploads in isolated AI Beauty tables;
+6. deterministic Python analyzes AI Beauty YouTube performance;
+7. deterministic Python updates future selection strategy based on real channel data.
 
 The goal is to improve AI Beauty channel views, retention, and subscriber growth while keeping this role fully isolated from the existing Beauty Cosplay and Beauty Dancing workflows.
 
@@ -139,9 +138,35 @@ python scripts/ai_beauty/report_status.py --limit 20 --json
 
 ## Agent responsibilities
 
+### Autonomous operator contract
+
+The stable deterministic operator command is:
+
+```bash
+python scripts/ai_beauty/operator.py --target-uploads 3 --run-id <run_id>
+```
+
+The deterministic operator owns collection, candidate selection, download, media verification, frame/contact-sheet generation, metadata template construction, upload execution after approval, local cleanup, and `ai_beauty_run_logs`. The operator does not make visual judgment by itself. If processing reaches a candidate that needs human/vision review, it stops with `needs_screening` and records a hard blocker in the form `vision_required:<aweme_id>`.
+
+Vision handoff contract:
+
+1. deterministic Python writes media evidence under `analysis/douyin_ai_beauty/<aweme_id>/`, including `analysis/douyin_ai_beauty/<aweme_id>/contact_sheet` artifacts;
+2. Hermes vision reviews the contact sheet and returns a screening decision;
+3. normalize the decision with `normalize_screening_json.py` into `analysis/douyin_ai_beauty/<aweme_id>/screening.json`;
+4. record or reuse that `screening.json` before approval/upload;
+5. rerun the same operator command, or use the direct processing command when only one candidate needs continuation: `python -m scripts.ai_beauty.process_selected --aweme-id <aweme_id> --auto-upload`;
+6. stop again on `needs_screening`, `vision_required:<aweme_id>`, quota/auth/download/upload blockers, no active candidates, or the configured target/max-iteration limit.
+
+Run-log evidence expectations:
+
+- write `ai_beauty_run_logs` for every operator run with `run_id`, status, uploads, screened/skipped/reviewed candidates, blockers, and summary details;
+- include uploaded/skipped/review reasons in the operator report;
+- preserve contact-sheet and `screening.json` evidence while recording local cleanup evidence for downloaded video/partial removal;
+- report cleanup failures as blockers or follow-up items instead of hiding them.
+
 ### 1. Candidate collection
 
-Collect Douyin beauty candidates without Chrome/CDP.
+Collect Douyin beauty candidates with lightweight HTTP/CLI first and controlled read-only Chrome/CDP fallback only when Douyin detail/playback requires page context.
 
 Candidate sources may include:
 
@@ -149,7 +174,8 @@ Candidate sources may include:
 - configured Douyin user pages/accounts;
 - configured Douyin tags or keywords;
 - configured URL lists;
-- future lightweight parser/API outputs.
+- future lightweight parser/API outputs;
+- controlled read-only CDP detail/playback fallback when lightweight paths fail.
 
 Each collection run should upsert candidate metadata into `beauty.ai_beauty_candidates` and log the run in `beauty.ai_beauty_run_logs`.
 
@@ -171,7 +197,7 @@ Completion criteria:
 
 - every discovered candidate is deduplicated by `aweme_id`;
 - all writes go only to AI Beauty tables;
-- no Chrome/CDP calls were used;
+- any Chrome/CDP fallback is controlled, read-only, AI-Beauty-only, and logged with enough detail to audit the fallback path;
 - collection errors are logged with enough detail to retry or replace the source.
 
 ### 2. Candidate download and media verification
@@ -601,7 +627,7 @@ Responsibilities:
 - update `ai_beauty_strategy_state`;
 - report major trend changes only.
 
-### Job B: lightweight Douyin candidate collection
+### Job B: Douyin candidate collection
 
 Frequency: daily or every 12 hours.
 
@@ -612,19 +638,16 @@ Responsibilities:
 - upsert `ai_beauty_candidates`;
 - log run results.
 
-### Job C: screening and upload
+### Job C: deterministic operator and vision handoff
 
 Frequency: daily or as YouTube quota allows.
 
 Responsibilities:
 
-- select top pending candidates;
-- download and verify;
-- screen with vision;
-- upload approved candidates to AI Beauty only;
-- write `ai_beauty_uploads`;
-- delete local files;
-- report uploaded/skipped/review items.
+- run `python scripts/ai_beauty/operator.py --target-uploads 3 --run-id <run_id>`;
+- let deterministic Python select top pending candidates, download and verify media, generate templates, process approved uploads, write `ai_beauty_uploads`, write `ai_beauty_run_logs`, and delete local files after safe completion;
+- when the operator returns `needs_screening` / `vision_required:<aweme_id>`, review the contact sheet, normalize with `normalize_screening_json.py`, save `screening.json`, then rerun the same operator command or the direct processing command;
+- report status, uploads, screened/skipped/reviewed candidates, blockers, and local cleanup evidence.
 
 ## Reporting
 
