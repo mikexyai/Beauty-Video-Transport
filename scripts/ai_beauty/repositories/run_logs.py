@@ -98,6 +98,7 @@ def build_run_summary(steps: Iterable[dict[str, Any]]) -> dict[str, Any]:
         "upload": {"attempted": 0, "dry_run_attempted": 0, "upload_attempted": 0, "uploaded": 0, "failed": 0},
         "verification": {"checked": 0, "ok": 0, "failed": 0},
         "cleanup": {"attempted": 0, "deleted": 0, "failed": 0},
+        "dry_run_selected": 0,
         "blockers": 0,
     }
     normalized_steps: list[dict[str, Any]] = []
@@ -128,6 +129,10 @@ def build_run_summary(steps: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
     def add_process_result(result: dict[str, Any]) -> None:
         status = str(result.get("status") or "")
+        if status == "dry_run_selected":
+            counts["dry_run_selected"] += 1
+            normalized_steps.append({"step": "dry_run_selected", "aweme_id": result.get("aweme_id"), "status": status})
+            return
         counts["download_process"]["attempted"] += 1
         if status in counts["download_process"]:
             counts["download_process"][status] += 1

@@ -694,6 +694,30 @@ class AiBeautyCoreTests(unittest.TestCase):
         self.assertEqual(summary["counts"]["cleanup"]["attempted"], 2)
         self.assertEqual(summary["counts"]["cleanup"]["deleted"], 1)
 
+    def test_build_run_summary_tracks_dry_run_selected_separately(self):
+        summary = build_run_summary([
+            {
+                "step": "process_iteration",
+                "results": [
+                    {"aweme_id": "dry-1", "status": "dry_run_selected"},
+                    {"aweme_id": "up-1", "status": "uploaded", "dry_run_rc": 0, "upload_rc": 0},
+                    {"aweme_id": "down-fail-1", "status": "download_failed"},
+                    {"aweme_id": "screen-1", "status": "needs_screening"},
+                    {"aweme_id": "upload-fail-1", "status": "upload_failed", "dry_run_rc": 0, "upload_rc": 1},
+                ],
+            }
+        ])
+
+        self.assertEqual(summary["counts"]["dry_run_selected"], 1)
+        self.assertEqual(summary["counts"]["download_process"]["attempted"], 4)
+        self.assertEqual(summary["counts"]["download_process"]["uploaded"], 1)
+        self.assertEqual(summary["counts"]["download_process"]["download_failed"], 1)
+        self.assertEqual(summary["counts"]["download_process"]["needs_screening"], 1)
+        self.assertEqual(summary["counts"]["download_process"]["upload_failed"], 1)
+        self.assertEqual(summary["counts"]["upload"]["attempted"], 2)
+        self.assertEqual(summary["counts"]["upload"]["uploaded"], 1)
+        self.assertEqual(summary["counts"]["upload"]["failed"], 1)
+
     def test_build_run_summary_records_blocker_retry_context(self):
         summary = build_run_summary([
             {
