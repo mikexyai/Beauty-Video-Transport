@@ -39,6 +39,7 @@ def operator_should_continue(
 
 def summarize_operator_iteration(results: list[dict[str, Any]]) -> dict[str, Any]:
     uploaded = [r for r in results if r.get("status") == "uploaded"]
+    dry_run_selected = [r for r in results if r.get("status") == "dry_run_selected"]
     screened_out = [r for r in results if r.get("candidate_status") == "screened_out" or r.get("status") == "screened_not_uploaded"]
     hard_blockers: list[str] = []
     for item in results:
@@ -51,6 +52,7 @@ def summarize_operator_iteration(results: list[dict[str, Any]]) -> dict[str, Any
             hard_blockers.append(f"vision_required{suffix}")
     return {
         "uploaded": len(uploaded),
+        "dry_run_selected": len(dry_run_selected),
         "screened_out": len(screened_out),
         "hard_blockers": hard_blockers,
         "results": results,
@@ -154,6 +156,11 @@ def run_operator(
                 result = run_process_selected(str(row["aweme_id"]), auto_upload=True)
             iteration_results.append(result)
         summary = summarize_operator_iteration(iteration_results)
+        if dry_run and summary["dry_run_selected"]:
+            summary["pending_candidates"] = [
+                {"aweme_id": row.get("aweme_id"), "candidate_status": row.get("candidate_status") or row.get("status")}
+                for row in selected
+            ]
         steps.append({"step": "process_iteration", **summary})
         if summary["hard_blockers"]:
             hard_blocker = "; ".join(summary["hard_blockers"])
@@ -171,12 +178,16 @@ def run_operator(
             )
             steps.append({"step": "reselect", "selected": [x.get("aweme_id") for x in collection.get("batch", {}).get("selected", [])]})
             if not collection.get("batch", {}).get("selected"):
-                hard_blocker = hard_blocker or "no_active_candidates"
+                if dry_run and summary["dry_run_selected"]:
+                    hard_blocker = hard_blocker or "dry_run_no_progress"
+                else:
+                    hard_blocker = hard_blocker or "no_active_candidates"
 
     final_uploads = count_uploads() - starting_upload_count
     if hard_blocker:
         steps.append({"step": "blocker", "reason": hard_blocker, "blocker": hard_blocker})
     final_summary = build_run_summary(steps)
+    final_summary["counts"]["dry_run_selected"] = sum(int(s.get("dry_run_selected") or 0) for s in steps)
     final_status = "ok" if final_uploads >= target_uploads else "blocked" if hard_blocker else "partial"
     DEFAULT_RUN_LOG_REPOSITORY.finish_run(
         run_id,

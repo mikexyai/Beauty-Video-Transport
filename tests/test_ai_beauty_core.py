@@ -48,7 +48,7 @@ from scripts.ai_beauty.repositories.run_logs import RunLogRepository, build_run_
 from scripts.ai_beauty.repositories.screenings import ScreeningRepository
 from scripts.ai_beauty.repositories.uploads import UploadRepository
 from scripts.youtube_profile_guard import validate_channel_identity
-from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration, run_process_selected
+from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration, run_operator, run_process_selected
 from scripts.ai_beauty.duplicate_detection import assess_text_duplicate_risk, normalize_duplicate_text, hamming_distance
 from scripts.bilibili_pipeline import decide_bilibili_candidate_action, route_bilibili_upload, build_bilibili_pipeline_plan
 from scripts.ai_beauty.fetch_metrics import parse_video_metric_item, build_metric_upsert_params
@@ -809,6 +809,25 @@ class AiBeautyCoreTests(unittest.TestCase):
         self.assertEqual(summary["uploaded"], 1)
         self.assertEqual(summary["screened_out"], 1)
         self.assertEqual(summary["hard_blockers"], ["download_failed:c", "vision_required:d"])
+
+    def test_dry_run_selected_no_upload_progress_reports_dry_run_context(self):
+        collection_calls = [
+            {"collection": {"total_found": 2}, "batch": {"selected": [{"aweme_id": "dry-1"}, {"aweme_id": "dry-2"}]}},
+            {"collection": {"total_found": 0}, "batch": {"selected": []}},
+        ]
+        selected_rows = [{"aweme_id": "dry-1", "candidate_status": BATCH_SELECTED_STATUS}]
+        with patch("scripts.ai_beauty.operator.DEFAULT_RUN_LOG_REPOSITORY.start_run"), \
+             patch("scripts.ai_beauty.operator.DEFAULT_RUN_LOG_REPOSITORY.finish_run"), \
+             patch("scripts.ai_beauty.operator.count_uploads", return_value=0), \
+             patch("scripts.ai_beauty.operator.run_scheduled_collection", side_effect=collection_calls), \
+             patch("scripts.ai_beauty.operator.fetch_batch_selected", side_effect=[selected_rows, []]):
+            result = run_operator(target_uploads=1, dry_run=True, max_iterations=1, run_id="unit-dry-run")
+
+        self.assertEqual(result["hard_blocker"], "dry_run_no_progress")
+        self.assertEqual(result["summary"]["counts"].get("dry_run_selected"), 1)
+        process_step = next(step for step in result["summary"]["steps"] if step.get("step") == "process_iteration")
+        self.assertEqual(process_step["dry_run_selected"], 1)
+        self.assertEqual(process_step["pending_candidates"], [{"aweme_id": "dry-1", "candidate_status": BATCH_SELECTED_STATUS}])
 
     def test_build_process_selected_command_uses_module_invocation_to_avoid_operator_name_shadowing(self):
         cmd = build_process_selected_command("123", auto_upload=True)
