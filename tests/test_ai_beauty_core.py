@@ -1,5 +1,6 @@
 import re
 import sys
+import io
 import unittest
 from unittest.mock import patch
 
@@ -48,7 +49,7 @@ from scripts.ai_beauty.repositories.run_logs import RunLogRepository, build_run_
 from scripts.ai_beauty.repositories.screenings import ScreeningRepository
 from scripts.ai_beauty.repositories.uploads import UploadRepository
 from scripts.youtube_profile_guard import validate_channel_identity
-from scripts.ai_beauty.operator import build_process_selected_command, operator_should_continue, summarize_operator_iteration, run_operator, run_process_selected
+from scripts.ai_beauty.operator import build_process_selected_command, classify_recovery_candidate, operator_should_continue, summarize_operator_iteration, run_operator, run_process_selected
 from scripts.ai_beauty.duplicate_detection import assess_text_duplicate_risk, normalize_duplicate_text, hamming_distance
 from scripts.bilibili_pipeline import decide_bilibili_candidate_action, route_bilibili_upload, build_bilibili_pipeline_plan
 from scripts.ai_beauty.fetch_metrics import parse_video_metric_item, build_metric_upsert_params
@@ -852,6 +853,87 @@ class AiBeautyCoreTests(unittest.TestCase):
         process_step = next(step for step in result["summary"]["steps"] if step.get("step") == "process_iteration")
         self.assertEqual(process_step["dry_run_selected"], 1)
         self.assertEqual(process_step["pending_candidates"], [{"aweme_id": "dry-1", "candidate_status": BATCH_SELECTED_STATUS}])
+
+    def test_classify_recovery_candidate_maps_pending_states(self):
+        rows = [
+            {
+                "aweme_id": "needs-vision",
+                "candidate_status": DOWNLOADED_STATUS,
+                "local_video_exists": True,
+                "contact_sheet_exists": True,
+                "screening_json_exists": False,
+                "has_db_screening": False,
+                "has_upload_row": False,
+            },
+            {
+                "aweme_id": "needs-record",
+                "candidate_status": DOWNLOADED_STATUS,
+                "local_video_exists": True,
+                "contact_sheet_exists": True,
+                "screening_json_exists": True,
+                "has_db_screening": False,
+                "has_upload_row": False,
+            },
+            {
+                "aweme_id": "needs-upload",
+                "candidate_status": DOWNLOADED_STATUS,
+                "local_video_exists": True,
+                "contact_sheet_exists": True,
+                "screening_json_exists": True,
+                "has_db_screening": True,
+                "db_screening_decision": "approved",
+                "has_upload_row": False,
+            },
+            {
+                "aweme_id": "needs-cleanup",
+                "candidate_status": UPLOADED_STATUS,
+                "local_video_exists": True,
+                "has_upload_row": True,
+                "local_file_deleted": False,
+            },
+            {
+                "aweme_id": "healthy-upload",
+                "candidate_status": UPLOADED_STATUS,
+                "local_video_exists": False,
+                "has_upload_row": True,
+                "local_file_deleted": True,
+            },
+        ]
+
+        actions = [classify_recovery_candidate(row)["action"] for row in rows]
+
+        self.assertEqual(actions, [
+            "vision_required",
+            "record_screening_needed",
+            "upload_needed",
+            "cleanup_needed",
+            None,
+        ])
+
+    def test_run_operator_recover_pending_dry_run_reports_recovery_only(self):
+        recovery_rows = [{"aweme_id": "needs-upload", "action": "upload_needed"}]
+        with patch("scripts.ai_beauty.operator.DEFAULT_RUN_LOG_REPOSITORY.start_run") as start_run, \
+             patch("scripts.ai_beauty.operator.DEFAULT_RUN_LOG_REPOSITORY.finish_run"), \
+             patch("scripts.ai_beauty.operator.count_uploads", return_value=0), \
+             patch("scripts.ai_beauty.operator.build_recovery_plan", return_value={"counts": {"upload_needed": 1}, "actions": recovery_rows}), \
+             patch("scripts.ai_beauty.operator.run_scheduled_collection") as collect:
+            result = run_operator(target_uploads=1, dry_run=True, max_iterations=1, run_id="unit-recovery", recover_pending=True)
+
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["hard_blocker"], "dry_run_recovery_plan")
+        self.assertEqual(result["summary"]["steps"], [{"step": "recovery", "counts": {"upload_needed": 1}, "actions": recovery_rows}])
+        start_run.assert_not_called()
+        collect.assert_not_called()
+
+    def test_cli_accepts_recover_pending_flag(self):
+        with patch("scripts.ai_beauty.operator.run_operator", return_value={"status": "blocked"}) as run:
+            with patch("sys.argv", ["operator.py", "--recover-pending", "--dry-run", "--target-uploads", "3", "--run-id", "cli-test", "--max-iterations", "1"]), \
+                 patch("sys.stdout", new_callable=io.StringIO):
+                from scripts.ai_beauty import operator
+
+                self.assertEqual(operator.main(), 0)
+
+        self.assertTrue(run.call_args.kwargs["recover_pending"])
 
     def test_build_process_selected_command_uses_module_invocation_to_avoid_operator_name_shadowing(self):
         cmd = build_process_selected_command("123", auto_upload=True)

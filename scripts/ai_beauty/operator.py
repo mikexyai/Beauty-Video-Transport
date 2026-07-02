@@ -11,10 +11,117 @@ PROJECT_BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_BOOTSTRAP_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_BOOTSTRAP_ROOT))
 
+from scripts.ai_beauty.db import connect
 from scripts.ai_beauty.repositories.run_logs import DEFAULT_RUN_LOG_REPOSITORY, build_run_summary
 from scripts.ai_beauty.report_status import latest_uploads
 from scripts.ai_beauty.scheduled_run import DEFAULT_KEYWORDS, run_scheduled_collection, parse_keywords
 from scripts.ai_beauty.process_selected import fetch_batch_selected
+from scripts.ai_beauty.state import DOWNLOADED_STATUS, UPLOADED_STATUS
+
+
+RECOVERY_ACTIONS = (
+    "vision_required",
+    "record_screening_needed",
+    "upload_needed",
+    "cleanup_needed",
+)
+
+
+def classify_recovery_candidate(row: dict[str, Any]) -> dict[str, Any]:
+    status = str(row.get("candidate_status") or "")
+    local_video_exists = bool(row.get("local_video_exists"))
+    contact_sheet_exists = bool(row.get("contact_sheet_exists"))
+    screening_json_exists = bool(row.get("screening_json_exists"))
+    has_db_screening = bool(row.get("has_db_screening"))
+    has_upload_row = bool(row.get("has_upload_row"))
+    db_screening_decision = str(row.get("db_screening_decision") or "")
+    local_file_deleted = row.get("local_file_deleted") is True
+    action: str | None = None
+    reason = "no_recovery_action"
+
+    if status == DOWNLOADED_STATUS and local_video_exists and contact_sheet_exists and not screening_json_exists:
+        action = "vision_required"
+        reason = "downloaded video and contact sheet exist, but screening.json is missing"
+    elif status == DOWNLOADED_STATUS and local_video_exists and screening_json_exists and not has_db_screening:
+        action = "record_screening_needed"
+        reason = "screening.json exists, but no DB screening row was recorded"
+    elif status == DOWNLOADED_STATUS and has_db_screening and db_screening_decision == "approved" and not has_upload_row:
+        action = "upload_needed"
+        reason = "approved DB screening exists, but no upload row was recorded"
+    elif status == UPLOADED_STATUS and has_upload_row and not local_file_deleted and local_video_exists:
+        action = "cleanup_needed"
+        reason = "upload row exists and local video still needs cleanup"
+
+    return {**row, "action": action, "reason": reason}
+
+
+def _artifact_state(row: dict[str, Any]) -> dict[str, Any]:
+    local_video_path = row.get("local_video_path")
+    analysis_dir = row.get("analysis_dir")
+    video_path = Path(local_video_path) if local_video_path else None
+    analysis_path = Path(analysis_dir) if analysis_dir else None
+    contact_sheet_path = analysis_path / "contact_sheet.jpg" if analysis_path else None
+    screening_json_path = analysis_path / "screening.json" if analysis_path else None
+    return {
+        "local_video_path": str(video_path) if video_path else None,
+        "analysis_dir": str(analysis_path) if analysis_path else None,
+        "contact_sheet_path": str(contact_sheet_path) if contact_sheet_path else None,
+        "screening_json_path": str(screening_json_path) if screening_json_path else None,
+        "local_video_exists": bool(video_path and video_path.exists()),
+        "contact_sheet_exists": bool(contact_sheet_path and contact_sheet_path.exists()),
+        "screening_json_exists": bool(screening_json_path and screening_json_path.exists()),
+    }
+
+
+def fetch_recovery_candidates(*, limit: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        cur = conn.execute(
+            """
+            SELECT c.aweme_id, c.candidate_status, c.local_video_path, c.analysis_dir,
+                   EXISTS (
+                       SELECT 1 FROM beauty.ai_beauty_screenings s
+                       WHERE s.aweme_id = c.aweme_id
+                   ) AS has_db_screening,
+                   (
+                       SELECT s.decision FROM beauty.ai_beauty_screenings s
+                       WHERE s.aweme_id = c.aweme_id
+                       ORDER BY s.id DESC
+                       LIMIT 1
+                   ) AS db_screening_decision,
+                   EXISTS (
+                       SELECT 1 FROM beauty.ai_beauty_uploads u
+                       WHERE u.aweme_id = c.aweme_id
+                   ) AS has_upload_row,
+                   (
+                       SELECT u.local_file_deleted FROM beauty.ai_beauty_uploads u
+                       WHERE u.aweme_id = c.aweme_id
+                       ORDER BY u.id DESC
+                       LIMIT 1
+                   ) AS local_file_deleted
+            FROM beauty.ai_beauty_candidates c
+            WHERE c.candidate_status IN (%s, %s)
+            ORDER BY c.discovered_at DESC, c.id DESC
+            LIMIT %s
+            """,
+            (DOWNLOADED_STATUS, UPLOADED_STATUS, limit),
+        )
+        cols = [d.name for d in cur.description]
+        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    return [{**row, **_artifact_state(row)} for row in rows]
+
+
+def build_recovery_plan(*, limit: int) -> dict[str, Any]:
+    classified = [classify_recovery_candidate(row) for row in fetch_recovery_candidates(limit=limit)]
+    actions = [row for row in classified if row.get("action")]
+    counts = {action: 0 for action in RECOVERY_ACTIONS}
+    for row in actions:
+        counts[str(row["action"])] += 1
+    return {
+        "mode": "dry_run_plan",
+        "counts": counts,
+        "actions": actions,
+        "informational": [row for row in classified if not row.get("action")],
+    }
 
 
 def operator_should_continue(
@@ -112,9 +219,39 @@ def run_operator(
     dry_run: bool = False,
     run_id: str | None = None,
     max_iterations: int = 20,
+    recover_pending: bool = False,
 ) -> dict[str, Any]:
     run_id = run_id or "ai-beauty-operator-manual"
     steps: list[dict[str, Any]] = []
+    if recover_pending:
+        if not dry_run:
+            recovery_step = {
+                "step": "recovery",
+                "status": "unsupported",
+                "blocker": "recover_pending_mutation_not_implemented",
+            }
+            summary = build_run_summary([recovery_step])
+            return {
+                "run_id": run_id,
+                "status": "blocked",
+                "target_uploads": target_uploads,
+                "uploads_this_run": 0,
+                "hard_blocker": "recover_pending_mutation_not_implemented",
+                "summary": summary,
+            }
+        recovery = build_recovery_plan(limit=max(1, target_uploads))
+        recovery_step = {"step": "recovery", **recovery}
+        summary = build_run_summary([recovery_step])
+        summary["steps"] = [recovery_step]
+        summary["recovery"] = recovery
+        return {
+            "run_id": run_id,
+            "status": "blocked",
+            "target_uploads": target_uploads,
+            "uploads_this_run": 0,
+            "hard_blocker": "dry_run_recovery_plan",
+            "summary": summary,
+        }
     DEFAULT_RUN_LOG_REPOSITORY.start_run(run_id, job_type="ai_beauty_operator", summary={"steps": []})
     starting_upload_count = count_uploads()
     hard_blocker: str | None = None
@@ -219,6 +356,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--run-id")
     parser.add_argument("--max-iterations", type=int, default=20)
+    parser.add_argument("--recover-pending", action="store_true", help="Plan recovery actions for pending AI Beauty candidates. Mutating recovery is not implemented yet.")
     args = parser.parse_args()
     result = run_operator(
         target_uploads=args.target_uploads,
@@ -229,6 +367,7 @@ def main() -> int:
         dry_run=args.dry_run,
         run_id=args.run_id,
         max_iterations=args.max_iterations,
+        recover_pending=args.recover_pending,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
     return 0 if result["status"] in {"ok", "partial", "blocked"} else 1
