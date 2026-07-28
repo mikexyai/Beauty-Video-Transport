@@ -11,7 +11,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 CHANNELS = {
     "channelCos": {
-        "title": "Beauty Cosplay",
+        "title": "Beauty Spotlight",
         "handle": "@beautycosplay",
         "channel_id": "UC9NJrEfSwFaZUozGm2Xo6mg",
     },
