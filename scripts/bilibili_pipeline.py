@@ -37,33 +37,32 @@ def decide_bilibili_candidate_action(candidate: dict[str, Any]) -> dict[str, Any
     """Return the high-level action before download/upload side effects.
 
     Rules preserved from the Bilibili skill:
-    - non-beauty stops the run before coin cleanup;
-    - beauty candidate with coin == 0 is removed from default favorites, not uploaded;
-    - beauty candidate with coin > 0 continues to inspection/download/upload.
+    - non-beauty stops the run before favorite cleanup;
+    - beauty candidates upload regardless of coin state;
+    - after verified upload, coin == 0 removes from default favorites while coin > 0 moves to the target folder.
     """
     if not _truthy(candidate.get("is_beauty")):
         return {
             "action": "stop_non_beauty",
             "upload": False,
             "remove_favorite": False,
+            "move_favorite": False,
             "reason": "Next favorite is not a beauty/cosplay/dance/model video.",
         }
     try:
         coin = int(candidate.get("coin") or 0)
     except (TypeError, ValueError):
         coin = 0
-    if coin <= 0:
-        return {
-            "action": "remove_default_favorite",
-            "upload": False,
-            "remove_favorite": True,
-            "reason": "Beauty candidate has coin == 0; remove from 默认收藏夹 without upload.",
-        }
     return {
         "action": "process_upload",
         "upload": True,
-        "remove_favorite": False,
-        "reason": "Beauty candidate is coined and processable.",
+        "remove_favorite": coin <= 0,
+        "move_favorite": coin > 0,
+        "reason": (
+            "Beauty candidate is processable; after verified upload, remove from 默认收藏夹 because coin == 0."
+            if coin <= 0
+            else "Beauty candidate is processable; after verified upload, move to the target categorized folder because coin > 0."
+        ),
     }
 
 
@@ -111,13 +110,13 @@ def build_bilibili_pipeline_plan(*, max_items: int = 5, dry_run: bool = True) ->
             },
             {
                 "step": "decide_coin_and_beauty_action",
-                "rule": "non-beauty stops before coin cleanup; beauty coin==0 remove-default; coin>0 process upload",
+                "rule": "non-beauty stops before favorite cleanup; beauty candidates upload regardless of coin; after verified upload coin==0 remove-default and coin>0 move to target folder",
                 "side_effect": False,
             },
             {
                 "step": "download_highest_quality",
                 "command": "python scripts/bilibili_download_best.py <BVID> --out 'downloads/bilibili/<BVID>.%(ext)s'",
-                "side_effect": "downloads media only for processable coined beauty candidates",
+                "side_effect": "downloads media for processable beauty candidates regardless of coin state",
             },
             {
                 "step": "verify_media_and_contact_sheet",
@@ -147,7 +146,7 @@ def build_bilibili_pipeline_plan(*, max_items: int = 5, dry_run: bool = True) ->
             {
                 "step": "post_upload_favorite_move_or_remove",
                 "command": "python scripts/beauty_cdp_ops.py deal move <BVID> --target-folder '<美女-竖屏|美女-横屏>'",
-                "side_effect": "moves uploaded coined favorite; coin==0 uses deal remove-default",
+                "side_effect": "after verified upload: coin>0 moves to target folder; coin==0 uses deal remove-default",
             },
             {
                 "step": "cleanup",

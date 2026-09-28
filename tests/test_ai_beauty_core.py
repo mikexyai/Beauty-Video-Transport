@@ -1014,15 +1014,25 @@ class AiBeautyCoreTests(unittest.TestCase):
     def test_hamming_distance_counts_bit_differences(self):
         self.assertEqual(hamming_distance(0b1010, 0b0011), 2)
 
-    def test_bilibili_coin_zero_beauty_candidate_is_removed_not_uploaded(self):
+    def test_bilibili_coin_zero_beauty_candidate_is_uploaded_then_removed(self):
         action = decide_bilibili_candidate_action({"is_beauty": True, "coin": 0})
-        self.assertEqual(action["action"], "remove_default_favorite")
-        self.assertFalse(action["upload"])
+        self.assertEqual(action["action"], "process_upload")
+        self.assertTrue(action["upload"])
+        self.assertTrue(action["remove_favorite"])
+        self.assertFalse(action["move_favorite"])
 
-    def test_bilibili_non_beauty_stops_before_coin_cleanup(self):
+    def test_bilibili_coin_positive_beauty_candidate_is_uploaded_then_moved(self):
+        action = decide_bilibili_candidate_action({"is_beauty": True, "coin": 2})
+        self.assertEqual(action["action"], "process_upload")
+        self.assertTrue(action["upload"])
+        self.assertFalse(action["remove_favorite"])
+        self.assertTrue(action["move_favorite"])
+
+    def test_bilibili_non_beauty_stops_before_favorite_cleanup(self):
         action = decide_bilibili_candidate_action({"is_beauty": False, "coin": 0})
         self.assertEqual(action["action"], "stop_non_beauty")
         self.assertFalse(action["remove_favorite"])
+        self.assertFalse(action["move_favorite"])
 
     def test_bilibili_routing_uses_dance_only_for_clear_dance(self):
         self.assertEqual(route_bilibili_upload({"orientation": "vertical", "clear_dance": True})["profile"], "channelDance")
