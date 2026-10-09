@@ -51,7 +51,12 @@ from scripts.ai_beauty.repositories.uploads import UploadRepository
 from scripts.youtube_profile_guard import validate_channel_identity
 from scripts.ai_beauty.operator import build_process_selected_command, classify_recovery_candidate, operator_should_continue, summarize_operator_iteration, run_operator, run_process_selected
 from scripts.ai_beauty.duplicate_detection import assess_text_duplicate_risk, normalize_duplicate_text, hamming_distance
-from scripts.bilibili_pipeline import decide_bilibili_candidate_action, route_bilibili_upload, build_bilibili_pipeline_plan
+from scripts.bilibili_pipeline import (
+    decide_bilibili_candidate_action,
+    route_bilibili_upload,
+    build_bilibili_pipeline_plan,
+    build_bilibili_scan_window,
+)
 from scripts.ai_beauty.fetch_metrics import parse_video_metric_item, build_metric_upsert_params
 from scripts.ai_beauty.update_strategy import build_strategy_recommendations
 
@@ -1027,6 +1032,30 @@ class AiBeautyCoreTests(unittest.TestCase):
         self.assertTrue(action["upload"])
         self.assertFalse(action["remove_favorite"])
         self.assertTrue(action["move_favorite"])
+
+    def test_bilibili_new_non_beauty_allows_two_lookahead_candidates(self):
+        window = build_bilibili_scan_window(
+            [
+                {"bvid": "BVNEWNON", "previously_seen_non_beauty": False},
+                {"bvid": "BVLOOK1"},
+                {"bvid": "BVLOOK2"},
+                {"bvid": "BVLOOK3"},
+            ]
+        )
+        self.assertEqual([item["bvid"] for item in window["candidates"]], ["BVNEWNON", "BVLOOK1", "BVLOOK2"])
+        self.assertEqual(window["lookahead_limit"], 2)
+        self.assertEqual(window["reason"], "new_non_beauty_lookahead")
+
+    def test_bilibili_recorded_non_beauty_stops_without_lookahead(self):
+        window = build_bilibili_scan_window(
+            [
+                {"bvid": "BVOLDNON", "previously_seen_non_beauty": True},
+                {"bvid": "BVLOOK1"},
+            ]
+        )
+        self.assertEqual([item["bvid"] for item in window["candidates"]], ["BVOLDNON"])
+        self.assertEqual(window["lookahead_limit"], 0)
+        self.assertEqual(window["reason"], "recorded_non_beauty_stop")
 
     def test_bilibili_non_beauty_stops_before_favorite_cleanup(self):
         action = decide_bilibili_candidate_action({"is_beauty": False, "coin": 0})

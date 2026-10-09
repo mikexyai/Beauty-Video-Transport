@@ -80,6 +80,57 @@ def route_bilibili_upload(visual: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def build_bilibili_scan_window(favorites: list[dict[str, Any]], *, new_non_beauty_lookahead: int = 2) -> dict[str, Any]:
+    """Return the bounded Bilibili favorite scan window for mixed new favorites.
+
+    Normally a known/recorded non-beauty item remains a hard stop. If the top
+    item is a *new* non-beauty item, inspect up to the next two favorites so a
+    newly saved non-beauty video does not block nearby newly saved beauty items.
+    The non-beauty item itself still must not be moved or removed.
+    """
+    if not favorites:
+        return {"candidates": [], "lookahead_limit": 0, "reason": "empty_default_favorites"}
+    first = favorites[0]
+    if bool(first.get("previously_seen_non_beauty")):
+        return {"candidates": favorites[:1], "lookahead_limit": 0, "reason": "recorded_non_beauty_stop"}
+    if first.get("previously_seen_non_beauty") is False:
+        limit = 1 + max(0, int(new_non_beauty_lookahead))
+        return {
+            "candidates": favorites[:limit],
+            "lookahead_limit": max(0, int(new_non_beauty_lookahead)),
+            "reason": "new_non_beauty_lookahead",
+        }
+    return {"candidates": favorites[:1], "lookahead_limit": 0, "reason": "normal_top_candidate"}
+
+
+def load_bilibili_seen_non_beauty(path: str | Path | None = None) -> set[str]:
+    """Load BVIDs previously recorded as non-beauty blockers."""
+    record_path = Path(path) if path is not None else PROJECT_ROOT / "analysis" / "bilibili_non_beauty_seen.json"
+    if not record_path.exists():
+        return set()
+    try:
+        data = json.loads(record_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return set()
+    if isinstance(data, dict):
+        rows = data.get("items", [])
+    else:
+        rows = data
+    return {str(row.get("bvid") or row.get("bv_id")) for row in rows if isinstance(row, dict) and (row.get("bvid") or row.get("bv_id"))}
+
+
+def annotate_bilibili_seen_non_beauty(favorites: list[dict[str, Any]], seen_bvids: set[str]) -> list[dict[str, Any]]:
+    """Mark favorite rows with whether they are known non-beauty blockers."""
+    annotated: list[dict[str, Any]] = []
+    for item in favorites:
+        copy = dict(item)
+        bvid = str(copy.get("bvid") or copy.get("bv_id") or "")
+        if bvid:
+            copy["previously_seen_non_beauty"] = bvid in seen_bvids
+        annotated.append(copy)
+    return annotated
+
+
 def build_guard_command(profile: str) -> str:
     meta = CHANNELS[profile]
     return (
@@ -101,6 +152,7 @@ def build_bilibili_pipeline_plan(*, max_items: int = 5, dry_run: bool = True) ->
             {
                 "step": "list_default_favorites",
                 "command": f"python scripts/beauty_cdp_ops.py list-default --ps {max_items}",
+                "rule": "If the top default-favorite item is a newly seen non-beauty video, record it in analysis/bilibili_non_beauty_seen.json, keep it in 默认收藏夹, and inspect up to the next 2 favorites so mixed non-beauty saves do not block nearby new beauty saves. A recorded/known non-beauty remains a normal hard stop.",
                 "side_effect": False,
             },
             {
