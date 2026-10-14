@@ -12,7 +12,12 @@ from scripts.ai_beauty.download_candidate import build_ytdlp_args, pick_best_pla
 from scripts.bilibili_download_best import build_bilibili_ytdlp_args
 from scripts.ai_beauty.refresh_douyin_cookies import _sign_with_node
 from scripts.ai_beauty.record_screening import build_screening_insert_params, validate_screening
-from scripts.ai_beauty.search_douyin import build_search_query, extract_aweme_candidates, filter_storeable_candidates
+from scripts.ai_beauty.search_douyin import (
+    build_search_query,
+    extract_aweme_candidates,
+    filter_storeable_candidates,
+    validate_douyin_search_payload,
+)
 from scripts.ai_beauty.rank_candidates import score_candidate, rank_candidates
 from scripts.ai_beauty.state import (
     ACTIVE_STATUSES,
@@ -454,6 +459,11 @@ class AiBeautyCoreTests(unittest.TestCase):
         self.assertEqual(candidates[0]["aweme_id"], "7407402364249935143")
         self.assertEqual(candidates[0]["author_name"], "作者")
         self.assertIn("甜妹", candidates[0]["hashtags"])
+
+    def test_validate_douyin_search_payload_raises_on_login_required(self):
+        payload = {"status_code": 2483, "status_msg": "请先登录，再继续搜索吧"}
+        with self.assertRaisesRegex(RuntimeError, "Douyin search login required"):
+            validate_douyin_search_payload(payload)
 
     def test_filter_storeable_candidates_excludes_screened_out_and_uploaded_ids(self):
         candidates = [{"aweme_id": "keep"}, {"aweme_id": "screened"}, {"aweme_id": "uploaded"}]

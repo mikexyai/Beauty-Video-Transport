@@ -94,6 +94,17 @@ def extract_aweme_candidates(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return candidates
 
 
+def validate_douyin_search_payload(payload: dict[str, Any]) -> None:
+    """Raise on Douyin API blocker responses that should not look like zero candidates."""
+    status_code = payload.get("status_code")
+    if status_code in (None, 0):
+        return
+    status_msg = str(payload.get("status_msg") or payload.get("message") or "")
+    if status_code == 2483 or "请先登录" in status_msg or "登录" in status_msg:
+        raise RuntimeError(f"Douyin search login required (status_code={status_code}, status_msg={status_msg})")
+    raise RuntimeError(f"Douyin search API error (status_code={status_code}, status_msg={status_msg})")
+
+
 def search_douyin(keyword: str, *, offset: int = 0, count: int = 20, cookie_path: Path = COOKIE_PATH) -> dict[str, Any]:
     if not cookie_path.exists():
         raise FileNotFoundError(
@@ -122,6 +133,7 @@ def search_douyin(keyword: str, *, offset: int = 0, count: int = 20, cookie_path
     if not raw:
         raise RuntimeError("Douyin search returned empty response body")
     payload = json.loads(raw.decode("utf-8"))
+    validate_douyin_search_payload(payload)
     return {
         "payload": payload,
         "candidates": extract_aweme_candidates(payload),
